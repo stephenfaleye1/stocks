@@ -1,0 +1,96 @@
+# =============================================================================
+# quant-arena — Phase 1 stack (plumbing & isolation)
+#
+#   docker compose -f docker-compose.quant.yml --env-file .env up -d ib-gateway
+#   docker compose -f docker-compose.quant.yml --env-file .env run --rm quant-db-migrate
+#   docker compose -f docker-compose.quant.yml --env-file .env run --rm quant-verify
+#
+# Isolation: every service lives on the dedicated `quant-net` bridge network.
+# The existing LiteLLM / PostgreSQL / Qdrant containers are reached through
+# host.docker.internal (their published host ports), so nothing in your other
+# workspaces is modified. All host port bindings are 127.0.0.1-only.
+# =============================================================================
+name: quant-arena
+
+x-host-gateway: &host-gateway
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+networks:
+  quant-net:
+    name: quant-net
+    driver: bridge
+
+services:
+  # ---------------------------------------------------------------------------
+  # Interactive Brokers Gateway — PAPER mode, read-only API until Phase 4.
+  # Inside quant-net the paper API is relayed on ib-gateway:4004.
+  # ---------------------------------------------------------------------------
+  ib-gateway:
+    image: ${IB_GATEWAY_IMAGE:-ghcr.io/gnzsnz/ib-gateway:stable}
+    container_name: quant-ib-gateway
+    restart: unless-stopped
+    networks: [quant-net]
+    environment:
+      TWS_USERID: ${TWS_USERID:?set TWS_USERID in .env}
+      TWS_PASSWORD: ${TWS_PASSWORD:?set TWS_PASSWORD in .env}
+      TRADING_MODE: paper            # hard-coded on purpose; not read from .env
+      READ_ONLY_API: "yes"           # flipped to "no" only at Phase 4 sign-off
+      TWS_ACCEPT_INCOMING: accept
+      AUTO_RESTART_TIME: "11:59 PM"
+      RELOGIN_AFTER_TWOFA_TIMEOUT: "yes"
+      TWOFA_TIMEOUT_ACTION: restart
+      TIME_ZONE: ${TIME_ZONE:-America/New_York}
+      TZ: ${TIME_ZONE:-America/New_York}
+      VNC_SERVER_PASSWORD: ${VNC_SERVER_PASSWORD:-}
+    ports:
+      - "127.0.0.1:4002:4004"        # paper API for host-side tools / notebooks
+      - "127.0.0.1:5900:5900"        # VNC (only active if VNC_SERVER_PASSWORD set)
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/4004' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
+  # ---------------------------------------------------------------------------
+  # One-shot: create `quant_trading` DB + app role on the EXISTING Postgres,
+  # then apply db/migrations/*.sql in order (tracked in schema_migrations).
+  # ---------------------------------------------------------------------------
+  quant-db-migrate:
+    image: postgres:16-alpine
+    <<: *host-gateway
+    networks: [quant-net]
+    profiles: [tools]
+    restart: "no"
+    environment:
+      PGHOST: ${PG_HOST:-host.docker.internal}
+      PGPORT: ${PG_PORT:-5432}
+      PG_ADMIN_USER: ${PG_ADMIN_USER:?set PG_ADMIN_USER}
+      PG_ADMIN_PASSWORD: ${PG_ADMIN_PASSWORD:?set PG_ADMIN_PASSWORD}
+      QUANT_DB_NAME: ${QUANT_DB_NAME:-quant_trading}
+      QUANT_DB_USER: ${QUANT_DB_USER:-quant_app}
+      QUANT_DB_PASSWORD: ${QUANT_DB_PASSWORD:?set QUANT_DB_PASSWORD}
+    volumes:
+      - ./db:/db:ro
+    entrypoint: ["sh", "/db/scripts/apply_migrations.sh"]
+
+  # ---------------------------------------------------------------------------
+  # One-shot: Phase 1 verification gate (IBKR heartbeat, Postgres tables,
+  # LiteLLM routing, Qdrant, webhook). Exits non-zero if any check fails.
+  # ---------------------------------------------------------------------------
+  quant-verify:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tools
+    image: quant-arena/tools:phase1
+    <<: *host-gateway
+    networks: [quant-net]
+    profiles: [tools]
+    restart: "no"
+    env_file: .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./config:/app/config:ro
+    command: ["python", "-m", "scripts.phase1_verify"]

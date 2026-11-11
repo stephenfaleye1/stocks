@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-arena"
+version = "0.1.0"
+description = "Autonomous quant research & paper-execution workspace (Phase 1: plumbing)"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.6,<3",
+  "pydantic-settings>=2.2,<3",
+  "PyYAML>=6.0",
+  "httpx>=0.27",
+  "psycopg[binary]>=3.1",
+  "ib_async>=1.0",   # maintained successor to ib_insync
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]

@@ -1,0 +1,80 @@
+# =============================================================================
+# Risk Governor rules — read ONLY by deterministic Python (execution-governor).
+# LLM agents never read or write this file. Values are validated at startup by
+# quant_common.risk_rules.RiskRules; an invalid file stops the governor cold.
+# =============================================================================
+version: 1
+
+account:
+  starting_capital_usd: 25000
+  target_equity_usd: 250000          # informational only — never used for sizing
+
+position_limits:
+  max_allocation_pct_per_position: 0.25   # of tradable equity (excludes ratchet reserve)
+  max_concurrent_positions: 4
+  max_risk_pct_per_trade: 0.05            # max loss at entry (debit paid / stop distance)
+  max_sector_allocation_pct: 0.50
+  min_cash_buffer_pct: 0.10
+
+options:
+  allow_naked_short_options: false        # hard rule; validator rejects true
+  allowed_structures:
+    - long_call
+    - long_put
+    - call_debit_spread
+    - put_debit_spread
+    - long_straddle
+    - long_strangle
+    - leaps_call
+  min_payoff_asymmetry: 3.0               # max_gain / max_loss at entry
+  min_days_to_expiry: 21
+  max_days_to_expiry: 400
+  min_open_interest: 250
+  max_bid_ask_spread_pct: 0.10            # (ask - bid) / mid, per leg
+  close_before_expiry_days: 5
+
+equity:
+  allow_short_equity: false
+  allow_margin: false
+  pyramiding:
+    enabled: true
+    max_adds: 2
+    add_trigger_r_multiple: 1.0           # add only after +1R open profit
+    add_size_fraction: 0.5                # each add = 50% of initial size
+
+stops:
+  atr_period: 14
+  atr_multiple_by_regime:
+    trend_momentum: 3.0
+    high_vol_catalyst: 3.5
+    chop_defensive: 2.0
+  trail_only_upward: true                 # watermark ratchets up, never down
+  option_premium_stop_pct: 0.50           # exit a debit structure at -50% of premium
+
+circuit_breakers:
+  max_daily_loss_pct: 0.06
+  max_weekly_loss_pct: 0.12
+  max_drawdown_from_peak_pct: 0.25        # halts all new entries; flatten requires human
+  max_orders_per_day: 20
+  max_consecutive_losses: 4
+
+profit_ratchet:
+  enabled: true
+  # When total equity first crosses a milestone, lock_pct_of_gains of the profit
+  # above starting capital (not already locked) is moved to the reserve, which
+  # is excluded from tradable equity forever after.
+  milestones:
+    - equity_usd: 50000
+      lock_pct_of_gains: 0.30
+    - equity_usd: 100000
+      lock_pct_of_gains: 0.40
+    - equity_usd: 150000
+      lock_pct_of_gains: 0.50
+
+execution:
+  order_type_default: LMT
+  max_slippage_pct_from_mid: 0.03
+  require_unique_client_order_id: true    # idempotency; duplicates are rejected
+  trading_hours_only: true
+  no_new_entries_first_minutes: 5
+  no_new_entries_last_minutes: 15
